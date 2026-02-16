@@ -2,7 +2,6 @@ export const dynamic = "force-dynamic";
 
 import { NextRequest, NextResponse } from "next/server";
 import { addCase, getCases, removeCase } from "@/lib/db";
-import { lookupCase } from "@/lib/scraper";
 
 export async function GET() {
   try {
@@ -23,6 +22,7 @@ export async function POST(req: NextRequest) {
 
   let result;
   try {
+    const { lookupCase } = await import("@/lib/scraper");
     result = await lookupCase(case_url.trim());
   } catch (e) {
     console.error("[POST /api/cases] lookupCase threw:", e);

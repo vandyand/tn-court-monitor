@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { getCases, getExistingEntries, insertEntry, recordAlert, getSetting } from "@/lib/db";
-import { scrapeDocketEntries, downloadPdf } from "@/lib/scraper";
+// scraper imported dynamically to avoid cold start penalty
 import { sendAlertEmail } from "@/lib/email";
 import type { ScrapedDocketEntry } from "@/lib/types";
 
@@ -25,6 +25,7 @@ async function handleCheck() {
     return NextResponse.json({ message: "No cases to check" });
   }
 
+  const { scrapeDocketEntries, downloadPdf } = await import("@/lib/scraper");
   const results = [];
 
   for (const c of cases) {
