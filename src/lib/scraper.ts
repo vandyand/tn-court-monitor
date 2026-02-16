@@ -1,20 +1,19 @@
 import * as cheerio from "cheerio";
+import { gotScraping } from "got-scraping";
 import type { SearchResult, ScrapedDocketEntry } from "./types";
 
 const BASE_URL = "https://pch.tncourts.gov";
-const USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-function headers(extra: Record<string, string> = {}): Record<string, string> {
-  return { "User-Agent": USER_AGENT, ...extra };
-}
+const gotOptions = {
+  headerGeneratorOptions: {
+    browsers: [{ name: "chrome" as const }],
+    operatingSystems: [{ name: "windows" as const }],
+  },
+};
 
-function parseCookies(setCookieHeader: string): string {
-  return setCookieHeader
-    .split(",")
-    .map((c) => c.split(";")[0].trim())
-    .filter(Boolean)
-    .join("; ");
+async function fetchPage(url: string): Promise<string> {
+  const res = await gotScraping({ url, ...gotOptions });
+  return res.body;
 }
 
 export async function lookupCase(input: string): Promise<SearchResult | null> {
@@ -31,14 +30,17 @@ export async function lookupCase(input: string): Promise<SearchResult | null> {
 
   // Fetch the case details page to get the case number and name
   const url = `${BASE_URL}/CaseDetails.aspx?id=${internalId}&Number=True`;
-  const res = await fetch(url, { headers: headers() });
-  const html = await res.text();
+  const html = await fetchPage(url);
 
-  if (html.includes("Security Notice")) return null;
+  if (html.includes("Security Notice") || html.includes("Unusual Activity")) return null;
 
   const $ = cheerio.load(html);
-  const caseName = $("h1").first().text().trim();
-  const caseNumber = $("h2").first().text().trim();
+
+  // The page has multiple h1/h2: first pair is site header, second is case info
+  const h1s = $("h1");
+  const h2s = $("h2");
+  const caseName = h1s.length > 1 ? h1s.eq(1).text().trim() : h1s.first().text().trim();
+  const caseNumber = h2s.length > 1 ? h2s.eq(1).text().trim() : h2s.first().text().trim();
 
   if (!caseNumber) return null;
 
@@ -54,11 +56,11 @@ export async function scrapeDocketEntries(
   internalId: string
 ): Promise<{ entries: ScrapedDocketEntry[]; caseName: string }> {
   const url = `${BASE_URL}/CaseDetails.aspx?id=${internalId}&Number=True`;
-  const res = await fetch(url, { headers: headers() });
-  const html = await res.text();
+  const html = await fetchPage(url);
   const $ = cheerio.load(html);
 
-  const caseName = $("h1").first().text().trim();
+  const h1s = $("h1");
+  const caseName = h1s.length > 1 ? h1s.eq(1).text().trim() : h1s.first().text().trim();
   const entries: ScrapedDocketEntry[] = [];
 
   // Find the Case History table
@@ -119,8 +121,8 @@ export async function downloadPdf(
 ): Promise<Buffer | null> {
   try {
     const pageUrl = `${BASE_URL}/CaseDetails.aspx?id=${internalId}&Number=True`;
-    const pageRes = await fetch(pageUrl, { headers: headers() });
-    const pageHtml = await pageRes.text();
+    const pageRes = await gotScraping({ url: pageUrl, ...gotOptions });
+    const pageHtml = pageRes.body;
     const $ = cheerio.load(pageHtml);
 
     const viewState = $("#__VIEWSTATE").val() as string;
@@ -129,7 +131,11 @@ export async function downloadPdf(
 
     if (!viewState || !eventValidation) return null;
 
-    const cookies = parseCookies(pageRes.headers.get("set-cookie") || "");
+    // Extract cookies from the GET response
+    const rawCookies = pageRes.headers["set-cookie"] as string | string[] | undefined;
+    const cookies = Array.isArray(rawCookies)
+      ? rawCookies.map((c) => c.split(";")[0]).join("; ")
+      : (rawCookies?.split(";")[0] ?? "");
 
     const formData = new URLSearchParams();
     formData.append("__VIEWSTATE", viewState);
@@ -138,25 +144,25 @@ export async function downloadPdf(
     formData.append("__EVENTTARGET", postbackTarget);
     formData.append("__EVENTARGUMENT", "");
 
-    const pdfRes = await fetch(pageUrl, {
+    const pdfRes = await gotScraping({
+      url: pageUrl,
       method: "POST",
-      headers: headers({
+      headers: {
         "Content-Type": "application/x-www-form-urlencoded",
         Cookie: cookies,
-      }),
+      },
       body: formData.toString(),
-      redirect: "follow",
+      followRedirect: true,
+      responseType: "buffer",
+      ...gotOptions,
     });
 
-    if (!pdfRes.ok) return null;
-
-    const contentType = pdfRes.headers.get("content-type") || "";
+    const contentType = pdfRes.headers["content-type"] || "";
     if (!contentType.includes("pdf") && !contentType.includes("octet-stream")) {
       return null;
     }
 
-    const arrayBuffer = await pdfRes.arrayBuffer();
-    return Buffer.from(arrayBuffer);
+    return Buffer.from(pdfRes.rawBody);
   } catch (error) {
     console.error("PDF download failed:", error);
     return null;
