@@ -58,7 +58,7 @@ export async function sendAlertEmail(
   }));
 
   await resend.emails.send({
-    from: "TN Court Monitor <alerts@avd.trading>",
+    from: "TN Court Monitor <alerts@pragmagen.xyz>",
     to: [to],
     subject: `[TN Court Alert] New activity in ${caseNumber}`,
     html,
