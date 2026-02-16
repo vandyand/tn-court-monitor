@@ -2,9 +2,14 @@ import * as cheerio from "cheerio";
 import type { SearchResult, ScrapedDocketEntry } from "./types";
 
 const BASE_URL = "https://pch.tncourts.gov";
+const USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+function headers(extra: Record<string, string> = {}): Record<string, string> {
+  return { "User-Agent": USER_AGENT, ...extra };
+}
 
 function parseCookies(setCookieHeader: string): string {
-  // Extract cookie name=value pairs from Set-Cookie headers
   return setCookieHeader
     .split(",")
     .map((c) => c.split(";")[0].trim())
@@ -12,57 +17,36 @@ function parseCookies(setCookieHeader: string): string {
     .join("; ");
 }
 
-export async function searchCase(caseNumber: string): Promise<SearchResult | null> {
-  // Step 1: GET the index page to establish a session cookie
-  const indexRes = await fetch(`${BASE_URL}/Index.aspx`);
-  const cookies = parseCookies(indexRes.headers.get("set-cookie") || "");
+export async function lookupCase(input: string): Promise<SearchResult | null> {
+  // Extract internal ID from URL if a URL was provided
+  const idMatch = input.match(/id=(\d+)/);
+  let internalId: string;
 
-  // Step 2: Use the search results URL with the session cookie
-  const searchUrl = `${BASE_URL}/SearchResults.aspx?k=${encodeURIComponent(caseNumber)}&Number=True`;
-  const searchRes = await fetch(searchUrl, {
-    headers: { Cookie: cookies },
-  });
-
-  const searchHtml = await searchRes.text();
-  const $ = cheerio.load(searchHtml);
-
-  // Find the first result row in the table
-  const firstRow = $("table tr").eq(1); // skip header row
-  if (!firstRow.length) return null;
-
-  const cells = firstRow.find("td");
-  if (cells.length < 2) return null;
-
-  const foundNumber = cells.eq(0).text().trim();
-  const caseName = cells.eq(1).text().trim();
-
-  if (!foundNumber) return null;
-
-  // Extract internal ID from onclick="javascript:redirectToCase('30247', 'Number', 'False');"
-  let internalId = "";
-
-  const onclick = firstRow.attr("onclick") || "";
-  const redirectMatch = onclick.match(/redirectToCase\('(\d+)'/);
-  if (redirectMatch) {
-    internalId = redirectMatch[1];
+  if (idMatch) {
+    internalId = idMatch[1];
+  } else {
+    // Input is not a URL — reject and tell user to paste URL
+    return null;
   }
 
-  // Fallback: look for CaseDetails links anywhere on the page
-  if (!internalId) {
-    const pageHtml = $.html();
-    const caseDetailsMatch = pageHtml.match(/CaseDetails\.aspx\?id=(\d+)/);
-    if (caseDetailsMatch) {
-      internalId = caseDetailsMatch[1];
-    }
-  }
+  // Fetch the case details page to get the case number and name
+  const url = `${BASE_URL}/CaseDetails.aspx?id=${internalId}&Number=True`;
+  const res = await fetch(url, { headers: headers() });
+  const html = await res.text();
 
-  if (!internalId) return null;
+  if (html.includes("Security Notice")) return null;
+
+  const $ = cheerio.load(html);
+  const caseName = $("h1").first().text().trim();
+  const caseNumber = $("h2").first().text().trim();
+
+  if (!caseNumber) return null;
 
   return {
-    case_number: foundNumber,
+    case_number: caseNumber,
     case_name: caseName,
     internal_id: internalId,
-    url: `${BASE_URL}/CaseDetails.aspx?id=${internalId}`,
+    url,
   };
 }
 
@@ -70,15 +54,14 @@ export async function scrapeDocketEntries(
   internalId: string
 ): Promise<{ entries: ScrapedDocketEntry[]; caseName: string }> {
   const url = `${BASE_URL}/CaseDetails.aspx?id=${internalId}&Number=True`;
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: headers() });
   const html = await res.text();
   const $ = cheerio.load(html);
 
   const caseName = $("h1").first().text().trim();
   const entries: ScrapedDocketEntry[] = [];
 
-  // Find the Case History table — it has columns: Date, Event, Filer, PDF
-  // Look for the heading "Case History" and then the next table
+  // Find the Case History table
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let historyTable: cheerio.Cheerio<any> | null = null;
 
@@ -89,11 +72,10 @@ export async function scrapeDocketEntries(
   });
 
   if (!historyTable) {
-    // Try finding by table with Date/Event/Filer/PDF headers
     $("table").each((_, table) => {
-      const headers = $(table).find("th");
-      const headerTexts = headers.map((__, h) => $(h).text().trim()).get();
-      if (headerTexts.includes("Date") && headerTexts.includes("Event")) {
+      const hs = $(table).find("th");
+      const texts = hs.map((__, h) => $(h).text().trim()).get();
+      if (texts.includes("Date") && texts.includes("Event")) {
         historyTable = $(table);
       }
     });
@@ -101,7 +83,6 @@ export async function scrapeDocketEntries(
 
   if (!historyTable) return { entries, caseName };
 
-  // Parse rows (skip header)
   $(historyTable!)
     .find("tbody tr")
     .each((_, row) => {
@@ -112,7 +93,6 @@ export async function scrapeDocketEntries(
       const event = cells.eq(1).text().trim();
       const filer = cells.eq(2).text().trim();
 
-      // Check for PDF link in the last cell
       let hasPdf = false;
       let pdfPostbackTarget: string | null = null;
 
@@ -120,7 +100,6 @@ export async function scrapeDocketEntries(
       const pdfLink = pdfCell.find("a");
       if (pdfLink.length) {
         hasPdf = true;
-        // Extract the __doPostBack target from the href
         const href = pdfLink.attr("href") || "";
         const postbackMatch = href.match(/__doPostBack\('([^']+)'/);
         if (postbackMatch) {
@@ -139,9 +118,8 @@ export async function downloadPdf(
   postbackTarget: string
 ): Promise<Buffer | null> {
   try {
-    // Step 1: GET the case details page to extract ViewState tokens
     const pageUrl = `${BASE_URL}/CaseDetails.aspx?id=${internalId}&Number=True`;
-    const pageRes = await fetch(pageUrl);
+    const pageRes = await fetch(pageUrl, { headers: headers() });
     const pageHtml = await pageRes.text();
     const $ = cheerio.load(pageHtml);
 
@@ -151,10 +129,8 @@ export async function downloadPdf(
 
     if (!viewState || !eventValidation) return null;
 
-    // Extract cookies from the response
-    const cookies = pageRes.headers.get("set-cookie") || "";
+    const cookies = parseCookies(pageRes.headers.get("set-cookie") || "");
 
-    // Step 2: POST back with the event target to download the PDF
     const formData = new URLSearchParams();
     formData.append("__VIEWSTATE", viewState);
     formData.append("__VIEWSTATEGENERATOR", viewStateGenerator || "");
@@ -164,10 +140,10 @@ export async function downloadPdf(
 
     const pdfRes = await fetch(pageUrl, {
       method: "POST",
-      headers: {
+      headers: headers({
         "Content-Type": "application/x-www-form-urlencoded",
         Cookie: cookies,
-      },
+      }),
       body: formData.toString(),
       redirect: "follow",
     });

@@ -64,7 +64,7 @@ export default function Dashboard() {
       const res = await fetch("/api/cases", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ case_number: newCaseNumber.trim() }),
+        body: JSON.stringify({ case_url: newCaseNumber.trim() }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -180,7 +180,7 @@ export default function Dashboard() {
               type="text"
               value={newCaseNumber}
               onChange={(e) => setNewCaseNumber(e.target.value)}
-              placeholder="e.g. E2008-02744-COA-R3-CV"
+              placeholder="Paste case URL from pch.tncourts.gov"
               className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
             <button
@@ -188,11 +188,15 @@ export default function Dashboard() {
               disabled={loading || !newCaseNumber.trim()}
               className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              {loading ? "Searching..." : "Add"}
+              {loading ? "Adding..." : "Add"}
             </button>
           </form>
           <p className="text-xs text-gray-400 mt-2">
-            Enter a TN appellate case number. The system will verify it exists on pch.tncourts.gov.
+            Search for your case on{" "}
+            <a href="https://pch.tncourts.gov/" target="_blank" rel="noopener" className="underline">
+              pch.tncourts.gov
+            </a>
+            , click into it, then paste the URL here.
           </p>
         </div>
 

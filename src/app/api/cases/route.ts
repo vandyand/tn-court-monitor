@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 
 import { NextRequest, NextResponse } from "next/server";
 import { addCase, getCases, removeCase } from "@/lib/db";
-import { searchCase } from "@/lib/scraper";
+import { lookupCase } from "@/lib/scraper";
 
 export async function GET() {
   const cases = await getCases();
@@ -10,18 +10,17 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const { case_number } = await req.json();
+  const { case_url } = await req.json();
 
-  if (!case_number?.trim()) {
-    return NextResponse.json({ error: "Case number is required" }, { status: 400 });
+  if (!case_url?.trim()) {
+    return NextResponse.json({ error: "Case URL is required" }, { status: 400 });
   }
 
-  // Search the court site to validate the case
-  const result = await searchCase(case_number.trim());
+  const result = await lookupCase(case_url.trim());
 
   if (!result) {
     return NextResponse.json(
-      { error: "Case not found on the TN Courts website. Please check the case number." },
+      { error: "Could not find a valid case. Please paste the full URL from pch.tncourts.gov (e.g. https://pch.tncourts.gov/CaseDetails.aspx?id=30247)." },
       { status: 404 }
     );
   }
