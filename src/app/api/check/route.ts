@@ -59,17 +59,24 @@ async function handleCheck() {
       }
 
       if (newEntries.length > 0) {
-        // Download PDFs for new entries that have them
+        // Download PDFs — only for incremental updates (≤3 new entries)
+        // Skip on initial bulk import to stay within serverless timeout
         const attachments = [];
-        for (const entry of newEntries) {
-          if (entry.has_pdf && entry.pdf_postback_target) {
-            const pdf = await downloadPdf(internalId, entry.pdf_postback_target);
-            if (pdf) {
-              const safeName = entry.event.replace(/[^a-zA-Z0-9-_]/g, "_").substring(0, 50);
-              attachments.push({
-                filename: `${c.case_number}_${entry.date}_${safeName}.pdf`,
-                content: pdf,
-              });
+        if (newEntries.length <= 3) {
+          for (const entry of newEntries) {
+            if (entry.has_pdf && entry.pdf_postback_target) {
+              try {
+                const pdf = await downloadPdf(internalId, entry.pdf_postback_target);
+                if (pdf) {
+                  const safeName = entry.event.replace(/[^a-zA-Z0-9-_]/g, "_").substring(0, 50);
+                  attachments.push({
+                    filename: `${c.case_number}_${entry.date}_${safeName}.pdf`,
+                    content: pdf,
+                  });
+                }
+              } catch {
+                console.error(`PDF download failed for ${entry.event}, skipping`);
+              }
             }
           }
         }
