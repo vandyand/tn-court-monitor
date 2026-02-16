@@ -266,12 +266,23 @@ export default function Dashboard() {
           )}
         </div>
 
-        <p className="text-center text-xs text-gray-400 mt-8">
-          Checks run daily. Data from{" "}
-          <a href="https://pch.tncourts.gov/" className="underline" target="_blank" rel="noopener">
-            pch.tncourts.gov
+        <div className="flex flex-col items-center gap-4 mt-8">
+          <a
+            href="https://buymeacoffee.com/vandyand"
+            target="_blank"
+            rel="noopener"
+            className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#FFDD00] text-gray-900 font-semibold text-sm rounded-full hover:bg-[#e8c900] transition-colors shadow-sm"
+          >
+            <span className="text-lg">&#9749;</span>
+            Buy me a coffee
           </a>
-        </p>
+          <p className="text-xs text-gray-400">
+            Checks run daily. Data from{" "}
+            <a href="https://pch.tncourts.gov/" className="underline" target="_blank" rel="noopener">
+              pch.tncourts.gov
+            </a>
+          </p>
+        </div>
       </div>
     </div>
   );
