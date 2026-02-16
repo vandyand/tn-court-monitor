@@ -57,11 +57,18 @@ export async function sendAlertEmail(
     content: a.content,
   }));
 
-  await resend.emails.send({
+  const result = await resend.emails.send({
     from: "TN Court Monitor <alerts@pragmagen.xyz>",
     to: [to],
     subject: `[TN Court Alert] New activity in ${caseNumber}`,
     html,
     attachments: resendAttachments.length > 0 ? resendAttachments : undefined,
   });
+
+  if (result.error) {
+    console.error("[sendAlertEmail] Resend error:", result.error);
+    throw new Error(`Email failed: ${result.error.message}`);
+  }
+
+  console.log("[sendAlertEmail] Sent successfully, id:", result.data?.id);
 }
