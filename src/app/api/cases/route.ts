@@ -16,7 +16,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Case URL is required" }, { status: 400 });
   }
 
-  const result = await lookupCase(case_url.trim());
+  let result;
+  try {
+    result = await lookupCase(case_url.trim());
+  } catch (e) {
+    console.error("[POST /api/cases] lookupCase threw:", e);
+    return NextResponse.json(
+      { error: `Scraper error: ${e instanceof Error ? e.message : String(e)}` },
+      { status: 502 }
+    );
+  }
 
   if (!result) {
     return NextResponse.json(

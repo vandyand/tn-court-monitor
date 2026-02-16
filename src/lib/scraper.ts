@@ -89,9 +89,12 @@ export async function lookupCase(input: string): Promise<SearchResult | null> {
 
   const internalId = idMatch[1];
   const url = `${BASE_URL}/CaseDetails.aspx?id=${internalId}&Number=True`;
-  const { body: html } = await fetchWithTls(url);
+  const { body: html, statusCode } = await fetchWithTls(url);
+
+  console.log(`[lookupCase] status=${statusCode}, bodyLen=${typeof html === "string" ? html.length : 0}, first100=${typeof html === "string" ? html.substring(0, 100) : "buffer"}`);
 
   if (typeof html !== "string" || html.includes("Security Notice") || html.includes("Unusual Activity")) {
+    console.log("[lookupCase] Blocked by security check");
     return null;
   }
 
