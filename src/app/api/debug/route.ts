@@ -1,33 +1,46 @@
 export const dynamic = "force-dynamic";
-export const runtime = "edge";
 
 import { NextResponse } from "next/server";
 
-export async function GET() {
-  const url = "https://pch.tncourts.gov/CaseDetails.aspx?id=30247&Number=True";
+const CHROMIUM_URL =
+  "https://github.com/nichochar/chromium-bun/releases/download/v131.0.1/chromium-v131.0.1-pack.tar";
 
+export async function GET() {
   try {
-    const res = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-      },
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const chromium = require("@sparticuz/chromium-min");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const puppeteer = require("puppeteer-core");
+
+    const executablePath = await chromium.executablePath(CHROMIUM_URL);
+
+    const browser = await puppeteer.launch({
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath,
+      headless: chromium.headless,
     });
-    const body = await res.text();
+
+    const page = await browser.newPage();
+    await page.goto("https://pch.tncourts.gov/CaseDetails.aspx?id=30247&Number=True", {
+      waitUntil: "domcontentloaded",
+      timeout: 30000,
+    });
+
+    const html = await page.content();
+    await browser.close();
 
     return NextResponse.json({
-      statusCode: res.status,
-      bodyLength: body.length,
-      first500: body.substring(0, 500),
-      containsSecurityNotice: body.includes("Security Notice"),
-      containsUnusualActivity: body.includes("Unusual Activity"),
-      runtime: "edge",
+      bodyLength: html.length,
+      first500: html.substring(0, 500),
+      containsSecurityNotice: html.includes("Security Notice"),
+      containsUnusualActivity: html.includes("Unusual Activity"),
+      containsCaseHistory: html.includes("Case History"),
     });
   } catch (e) {
     return NextResponse.json({
       error: e instanceof Error ? e.message : String(e),
-      runtime: "edge",
+      stack: e instanceof Error ? e.stack?.split("\n").slice(0, 5) : undefined,
     });
   }
 }

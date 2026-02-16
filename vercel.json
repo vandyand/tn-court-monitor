@@ -4,5 +4,13 @@
       "path": "/api/check",
       "schedule": "0 12 * * *"
     }
-  ]
+  ],
+  "functions": {
+    "src/app/api/cases/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/check/route.ts": {
+      "maxDuration": 60
+    }
+  }
 }

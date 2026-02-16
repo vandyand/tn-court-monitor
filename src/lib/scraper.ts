@@ -1,86 +1,38 @@
 import * as cheerio from "cheerio";
-import * as https from "https";
 import type { SearchResult, ScrapedDocketEntry } from "./types";
 
 const BASE_URL = "https://pch.tncourts.gov";
-const USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-// Chrome-like cipher suites — required to bypass TLS fingerprint detection
-const CIPHERS = [
-  "TLS_AES_128_GCM_SHA256",
-  "TLS_AES_256_GCM_SHA384",
-  "TLS_CHACHA20_POLY1305_SHA256",
-  "ECDHE-ECDSA-AES128-GCM-SHA256",
-  "ECDHE-RSA-AES128-GCM-SHA256",
-  "ECDHE-ECDSA-AES256-GCM-SHA384",
-  "ECDHE-RSA-AES256-GCM-SHA384",
-  "ECDHE-ECDSA-CHACHA20-POLY1305",
-  "ECDHE-RSA-CHACHA20-POLY1305",
-  "ECDHE-RSA-AES128-SHA",
-  "ECDHE-RSA-AES256-SHA",
-  "AES128-GCM-SHA256",
-  "AES256-GCM-SHA384",
-].join(":");
+// Chromium path for local dev vs serverless
+const CHROMIUM_URL =
+  "https://github.com/nichochar/chromium-bun/releases/download/v131.0.1/chromium-v131.0.1-pack.tar";
 
-const DEFAULT_HEADERS: Record<string, string> = {
-  "User-Agent": USER_AGENT,
-  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-  "Accept-Language": "en-US,en;q=0.9",
-};
+async function getBrowser() {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const chromium = require("@sparticuz/chromium-min");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const puppeteer = require("puppeteer-core");
 
-interface FetchResult {
-  body: string | Buffer;
-  statusCode: number;
-  headers: Record<string, string | string[] | undefined>;
+  const executablePath = await chromium.executablePath(CHROMIUM_URL);
+
+  return puppeteer.launch({
+    args: chromium.args,
+    defaultViewport: chromium.defaultViewport,
+    executablePath,
+    headless: chromium.headless,
+  });
 }
 
-function fetchWithTls(
-  url: string,
-  options: {
-    method?: string;
-    headers?: Record<string, string>;
-    body?: string;
-    responseType?: "buffer";
-  } = {}
-): Promise<FetchResult> {
-  return new Promise((resolve, reject) => {
-    const parsed = new URL(url);
-    const req = https.request(
-      {
-        hostname: parsed.hostname,
-        path: parsed.pathname + parsed.search,
-        method: options.method || "GET",
-        headers: { ...DEFAULT_HEADERS, ...options.headers },
-        ciphers: CIPHERS,
-        minVersion: "TLSv1.2",
-      },
-      (res) => {
-        // Handle redirects
-        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          const redirectUrl = res.headers.location.startsWith("http")
-            ? res.headers.location
-            : `${parsed.protocol}//${parsed.hostname}${res.headers.location}`;
-          resolve(fetchWithTls(redirectUrl, options));
-          return;
-        }
-
-        const chunks: Buffer[] = [];
-        res.on("data", (chunk: Buffer) => chunks.push(chunk));
-        res.on("end", () => {
-          const raw = Buffer.concat(chunks);
-          resolve({
-            body: options.responseType === "buffer" ? raw : raw.toString("utf-8"),
-            statusCode: res.statusCode || 0,
-            headers: res.headers as Record<string, string | string[] | undefined>,
-          });
-        });
-      }
-    );
-    req.on("error", reject);
-    if (options.body) req.write(options.body);
-    req.end();
-  });
+async function fetchPageHtml(url: string): Promise<string> {
+  const browser = await getBrowser();
+  try {
+    const page = await browser.newPage();
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+    const html = await page.content();
+    return html;
+  } finally {
+    await browser.close();
+  }
 }
 
 export async function lookupCase(input: string): Promise<SearchResult | null> {
@@ -89,11 +41,9 @@ export async function lookupCase(input: string): Promise<SearchResult | null> {
 
   const internalId = idMatch[1];
   const url = `${BASE_URL}/CaseDetails.aspx?id=${internalId}&Number=True`;
-  const { body: html, statusCode } = await fetchWithTls(url);
+  const html = await fetchPageHtml(url);
 
-  console.log(`[lookupCase] status=${statusCode}, bodyLen=${typeof html === "string" ? html.length : 0}, first100=${typeof html === "string" ? html.substring(0, 100) : "buffer"}`);
-
-  if (typeof html !== "string" || html.includes("Security Notice") || html.includes("Unusual Activity")) {
+  if (html.includes("Security Notice") || html.includes("Unusual Activity")) {
     console.log("[lookupCase] Blocked by security check");
     return null;
   }
@@ -113,8 +63,8 @@ export async function scrapeDocketEntries(
   internalId: string
 ): Promise<{ entries: ScrapedDocketEntry[]; caseName: string }> {
   const url = `${BASE_URL}/CaseDetails.aspx?id=${internalId}&Number=True`;
-  const { body: html } = await fetchWithTls(url);
-  const $ = cheerio.load(html as string);
+  const html = await fetchPageHtml(url);
+  const $ = cheerio.load(html);
 
   const h1s = $("h1");
   const caseName = h1s.length > 1 ? h1s.eq(1).text().trim() : h1s.first().text().trim();
@@ -176,44 +126,43 @@ export async function downloadPdf(
   postbackTarget: string
 ): Promise<Buffer | null> {
   try {
-    const pageUrl = `${BASE_URL}/CaseDetails.aspx?id=${internalId}&Number=True`;
-    const { body: pageHtml, headers: pageHeaders } = await fetchWithTls(pageUrl);
-    const $ = cheerio.load(pageHtml as string);
+    const browser = await getBrowser();
+    try {
+      const page = await browser.newPage();
+      const pageUrl = `${BASE_URL}/CaseDetails.aspx?id=${internalId}&Number=True`;
+      await page.goto(pageUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
 
-    const viewState = $("#__VIEWSTATE").val() as string;
-    const viewStateGenerator = $("#__VIEWSTATEGENERATOR").val() as string;
-    const eventValidation = $("#__EVENTVALIDATION").val() as string;
+      // Set up download interception
+      const client = await page.createCDPSession();
+      await client.send("Page.setDownloadBehavior", {
+        behavior: "allow",
+        downloadPath: "/tmp",
+      });
 
-    if (!viewState || !eventValidation) return null;
+      // Trigger the PostBack to download the PDF
+      await page.evaluate((target: string) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (window as any).__doPostBack(target, "");
+      }, postbackTarget);
 
-    const rawCookies = pageHeaders["set-cookie"];
-    const cookies = Array.isArray(rawCookies)
-      ? rawCookies.map((c) => c.split(";")[0]).join("; ")
-      : rawCookies?.split(";")[0] ?? "";
+      // Wait for the response
+      const response = await page.waitForNavigation({
+        waitUntil: "networkidle0",
+        timeout: 15000,
+      });
 
-    const formData = new URLSearchParams();
-    formData.append("__VIEWSTATE", viewState);
-    formData.append("__VIEWSTATEGENERATOR", viewStateGenerator || "");
-    formData.append("__EVENTVALIDATION", eventValidation);
-    formData.append("__EVENTTARGET", postbackTarget);
-    formData.append("__EVENTARGUMENT", "");
+      if (!response) return null;
 
-    const { body, headers } = await fetchWithTls(pageUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Cookie: cookies,
-      },
-      body: formData.toString(),
-      responseType: "buffer",
-    });
+      const contentType = response.headers()["content-type"] || "";
+      if (!contentType.includes("pdf") && !contentType.includes("octet-stream")) {
+        return null;
+      }
 
-    const contentType = (headers["content-type"] as string) || "";
-    if (!contentType.includes("pdf") && !contentType.includes("octet-stream")) {
-      return null;
+      const buffer = await response.buffer();
+      return Buffer.from(buffer);
+    } finally {
+      await browser.close();
     }
-
-    return Buffer.isBuffer(body) ? body : Buffer.from(body);
   } catch (error) {
     console.error("PDF download failed:", error);
     return null;
