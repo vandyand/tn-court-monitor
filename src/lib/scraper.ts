@@ -3,37 +3,24 @@ import type { SearchResult, ScrapedDocketEntry } from "./types";
 
 const BASE_URL = "https://pch.tncourts.gov";
 
+function parseCookies(setCookieHeader: string): string {
+  // Extract cookie name=value pairs from Set-Cookie headers
+  return setCookieHeader
+    .split(",")
+    .map((c) => c.split(";")[0].trim())
+    .filter(Boolean)
+    .join("; ");
+}
+
 export async function searchCase(caseNumber: string): Promise<SearchResult | null> {
-  // Step 1: GET the search page to establish session and get ViewState
-  const indexUrl = `${BASE_URL}/Index.aspx`;
-  const indexRes = await fetch(indexUrl);
-  const indexHtml = await indexRes.text();
-  const $index = cheerio.load(indexHtml);
+  // Step 1: GET the index page to establish a session cookie
+  const indexRes = await fetch(`${BASE_URL}/Index.aspx`);
+  const cookies = parseCookies(indexRes.headers.get("set-cookie") || "");
 
-  const viewState = $index("#__VIEWSTATE").val() as string;
-  const viewStateGenerator = $index("#__VIEWSTATEGENERATOR").val() as string;
-  const eventValidation = $index("#__EVENTVALIDATION").val() as string;
-  const cookies = indexRes.headers.get("set-cookie") || "";
-
-  // Step 2: POST the search form with correct ASP.NET field names
-  const formData = new URLSearchParams();
-  formData.append("__EVENTTARGET", "btnSearch");
-  formData.append("__EVENTARGUMENT", "");
-  formData.append("__VIEWSTATE", viewState || "");
-  formData.append("__VIEWSTATEGENERATOR", viewStateGenerator || "");
-  formData.append("__EVENTVALIDATION", eventValidation || "");
-  formData.append("searchText1", caseNumber);
-  formData.append("searchText", "");
-  formData.append("SearchTerm", "rdb2_CaseNumber");
-
-  const searchRes = await fetch(indexUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Cookie: cookies,
-    },
-    body: formData.toString(),
-    redirect: "follow",
+  // Step 2: Use the search results URL with the session cookie
+  const searchUrl = `${BASE_URL}/SearchResults.aspx?k=${encodeURIComponent(caseNumber)}&Number=True`;
+  const searchRes = await fetch(searchUrl, {
+    headers: { Cookie: cookies },
   });
 
   const searchHtml = await searchRes.text();
