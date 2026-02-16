@@ -1,42 +1,101 @@
 import * as cheerio from "cheerio";
-import { gotScraping } from "got-scraping";
+import * as https from "https";
 import type { SearchResult, ScrapedDocketEntry } from "./types";
 
 const BASE_URL = "https://pch.tncourts.gov";
+const USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-const gotOptions = {
-  headerGeneratorOptions: {
-    browsers: [{ name: "chrome" as const }],
-    operatingSystems: [{ name: "windows" as const }],
-  },
+// Chrome-like cipher suites — required to bypass TLS fingerprint detection
+const CIPHERS = [
+  "TLS_AES_128_GCM_SHA256",
+  "TLS_AES_256_GCM_SHA384",
+  "TLS_CHACHA20_POLY1305_SHA256",
+  "ECDHE-ECDSA-AES128-GCM-SHA256",
+  "ECDHE-RSA-AES128-GCM-SHA256",
+  "ECDHE-ECDSA-AES256-GCM-SHA384",
+  "ECDHE-RSA-AES256-GCM-SHA384",
+  "ECDHE-ECDSA-CHACHA20-POLY1305",
+  "ECDHE-RSA-CHACHA20-POLY1305",
+  "ECDHE-RSA-AES128-SHA",
+  "ECDHE-RSA-AES256-SHA",
+  "AES128-GCM-SHA256",
+  "AES256-GCM-SHA384",
+].join(":");
+
+const DEFAULT_HEADERS: Record<string, string> = {
+  "User-Agent": USER_AGENT,
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
 };
 
-async function fetchPage(url: string): Promise<string> {
-  const res = await gotScraping({ url, ...gotOptions });
-  return res.body;
+interface FetchResult {
+  body: string | Buffer;
+  statusCode: number;
+  headers: Record<string, string | string[] | undefined>;
+}
+
+function fetchWithTls(
+  url: string,
+  options: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    responseType?: "buffer";
+  } = {}
+): Promise<FetchResult> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const req = https.request(
+      {
+        hostname: parsed.hostname,
+        path: parsed.pathname + parsed.search,
+        method: options.method || "GET",
+        headers: { ...DEFAULT_HEADERS, ...options.headers },
+        ciphers: CIPHERS,
+        minVersion: "TLSv1.2",
+      },
+      (res) => {
+        // Handle redirects
+        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          const redirectUrl = res.headers.location.startsWith("http")
+            ? res.headers.location
+            : `${parsed.protocol}//${parsed.hostname}${res.headers.location}`;
+          resolve(fetchWithTls(redirectUrl, options));
+          return;
+        }
+
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          const raw = Buffer.concat(chunks);
+          resolve({
+            body: options.responseType === "buffer" ? raw : raw.toString("utf-8"),
+            statusCode: res.statusCode || 0,
+            headers: res.headers as Record<string, string | string[] | undefined>,
+          });
+        });
+      }
+    );
+    req.on("error", reject);
+    if (options.body) req.write(options.body);
+    req.end();
+  });
 }
 
 export async function lookupCase(input: string): Promise<SearchResult | null> {
-  // Extract internal ID from URL if a URL was provided
   const idMatch = input.match(/id=(\d+)/);
-  let internalId: string;
+  if (!idMatch) return null;
 
-  if (idMatch) {
-    internalId = idMatch[1];
-  } else {
-    // Input is not a URL — reject and tell user to paste URL
+  const internalId = idMatch[1];
+  const url = `${BASE_URL}/CaseDetails.aspx?id=${internalId}&Number=True`;
+  const { body: html } = await fetchWithTls(url);
+
+  if (typeof html !== "string" || html.includes("Security Notice") || html.includes("Unusual Activity")) {
     return null;
   }
 
-  // Fetch the case details page to get the case number and name
-  const url = `${BASE_URL}/CaseDetails.aspx?id=${internalId}&Number=True`;
-  const html = await fetchPage(url);
-
-  if (html.includes("Security Notice") || html.includes("Unusual Activity")) return null;
-
   const $ = cheerio.load(html);
-
-  // The page has multiple h1/h2: first pair is site header, second is case info
   const h1s = $("h1");
   const h2s = $("h2");
   const caseName = h1s.length > 1 ? h1s.eq(1).text().trim() : h1s.first().text().trim();
@@ -44,26 +103,20 @@ export async function lookupCase(input: string): Promise<SearchResult | null> {
 
   if (!caseNumber) return null;
 
-  return {
-    case_number: caseNumber,
-    case_name: caseName,
-    internal_id: internalId,
-    url,
-  };
+  return { case_number: caseNumber, case_name: caseName, internal_id: internalId, url };
 }
 
 export async function scrapeDocketEntries(
   internalId: string
 ): Promise<{ entries: ScrapedDocketEntry[]; caseName: string }> {
   const url = `${BASE_URL}/CaseDetails.aspx?id=${internalId}&Number=True`;
-  const html = await fetchPage(url);
-  const $ = cheerio.load(html);
+  const { body: html } = await fetchWithTls(url);
+  const $ = cheerio.load(html as string);
 
   const h1s = $("h1");
   const caseName = h1s.length > 1 ? h1s.eq(1).text().trim() : h1s.first().text().trim();
   const entries: ScrapedDocketEntry[] = [];
 
-  // Find the Case History table
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let historyTable: cheerio.Cheerio<any> | null = null;
 
@@ -121,9 +174,8 @@ export async function downloadPdf(
 ): Promise<Buffer | null> {
   try {
     const pageUrl = `${BASE_URL}/CaseDetails.aspx?id=${internalId}&Number=True`;
-    const pageRes = await gotScraping({ url: pageUrl, ...gotOptions });
-    const pageHtml = pageRes.body;
-    const $ = cheerio.load(pageHtml);
+    const { body: pageHtml, headers: pageHeaders } = await fetchWithTls(pageUrl);
+    const $ = cheerio.load(pageHtml as string);
 
     const viewState = $("#__VIEWSTATE").val() as string;
     const viewStateGenerator = $("#__VIEWSTATEGENERATOR").val() as string;
@@ -131,11 +183,10 @@ export async function downloadPdf(
 
     if (!viewState || !eventValidation) return null;
 
-    // Extract cookies from the GET response
-    const rawCookies = pageRes.headers["set-cookie"] as string | string[] | undefined;
+    const rawCookies = pageHeaders["set-cookie"];
     const cookies = Array.isArray(rawCookies)
       ? rawCookies.map((c) => c.split(";")[0]).join("; ")
-      : (rawCookies?.split(";")[0] ?? "");
+      : rawCookies?.split(";")[0] ?? "";
 
     const formData = new URLSearchParams();
     formData.append("__VIEWSTATE", viewState);
@@ -144,25 +195,22 @@ export async function downloadPdf(
     formData.append("__EVENTTARGET", postbackTarget);
     formData.append("__EVENTARGUMENT", "");
 
-    const pdfRes = await gotScraping({
-      url: pageUrl,
+    const { body, headers } = await fetchWithTls(pageUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
         Cookie: cookies,
       },
       body: formData.toString(),
-      followRedirect: true,
       responseType: "buffer",
-      ...gotOptions,
     });
 
-    const contentType = pdfRes.headers["content-type"] || "";
+    const contentType = (headers["content-type"] as string) || "";
     if (!contentType.includes("pdf") && !contentType.includes("octet-stream")) {
       return null;
     }
 
-    return Buffer.from(pdfRes.rawBody);
+    return Buffer.isBuffer(body) ? body : Buffer.from(body);
   } catch (error) {
     console.error("PDF download failed:", error);
     return null;

@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["got-scraping", "header-generator", "got", "http2-wrapper"],
+  /* config options here */
 };
 
 export default nextConfig;
