@@ -5,7 +5,7 @@ const BASE_URL = "https://pch.tncourts.gov";
 
 // Chromium path for local dev vs serverless
 const CHROMIUM_URL =
-  "https://github.com/nichochar/chromium-bun/releases/download/v131.0.1/chromium-v131.0.1-pack.tar";
+  "https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.x64.tar";
 
 async function getBrowser() {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
