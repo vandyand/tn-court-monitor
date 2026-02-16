@@ -15,14 +15,16 @@ export async function searchCase(caseNumber: string): Promise<SearchResult | nul
   const eventValidation = $index("#__EVENTVALIDATION").val() as string;
   const cookies = indexRes.headers.get("set-cookie") || "";
 
-  // Step 2: POST the search form
+  // Step 2: POST the search form with correct ASP.NET field names
   const formData = new URLSearchParams();
+  formData.append("__EVENTTARGET", "btnSearch");
+  formData.append("__EVENTARGUMENT", "");
   formData.append("__VIEWSTATE", viewState || "");
   formData.append("__VIEWSTATEGENERATOR", viewStateGenerator || "");
   formData.append("__EVENTVALIDATION", eventValidation || "");
   formData.append("searchText1", caseNumber);
-  formData.append("searchType", "Number");
-  formData.append("searchButton", "Search");
+  formData.append("searchText", "");
+  formData.append("SearchTerm", "rdb2_CaseNumber");
 
   const searchRes = await fetch(indexUrl, {
     method: "POST",
