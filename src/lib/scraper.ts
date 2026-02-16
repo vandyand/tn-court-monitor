@@ -132,34 +132,51 @@ export async function downloadPdf(
       const pageUrl = `${BASE_URL}/CaseDetails.aspx?id=${internalId}&Number=True`;
       await page.goto(pageUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
 
-      // Set up download interception
+      // Intercept the PDF response via CDP
       const client = await page.createCDPSession();
-      await client.send("Page.setDownloadBehavior", {
-        behavior: "allow",
-        downloadPath: "/tmp",
+      await client.send("Fetch.enable", {
+        patterns: [{ requestStage: "Response" }],
       });
 
-      // Trigger the PostBack to download the PDF
+      // Set up a promise that resolves when we get a PDF response
+      const pdfPromise = new Promise<Buffer | null>((resolve) => {
+        const timeout = setTimeout(() => resolve(null), 20000);
+
+        client.on("Fetch.requestPaused", async (event: {
+          requestId: string;
+          responseStatusCode?: number;
+          responseHeaders?: { name: string; value: string }[];
+        }) => {
+          const contentType = event.responseHeaders
+            ?.find((h: { name: string }) => h.name.toLowerCase() === "content-type")
+            ?.value || "";
+
+          if (contentType.includes("pdf") || contentType.includes("octet-stream")) {
+            try {
+              const body = await client.send("Fetch.getResponseBody", {
+                requestId: event.requestId,
+              });
+              clearTimeout(timeout);
+              const buf = Buffer.from(body.body, body.base64Encoded ? "base64" : "utf-8");
+              await client.send("Fetch.continueRequest", { requestId: event.requestId });
+              resolve(buf);
+            } catch {
+              await client.send("Fetch.continueRequest", { requestId: event.requestId });
+              resolve(null);
+            }
+          } else {
+            await client.send("Fetch.continueRequest", { requestId: event.requestId });
+          }
+        });
+      });
+
+      // Trigger the PostBack
       await page.evaluate((target: string) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (window as any).__doPostBack(target, "");
       }, postbackTarget);
 
-      // Wait for the response
-      const response = await page.waitForNavigation({
-        waitUntil: "networkidle0",
-        timeout: 15000,
-      });
-
-      if (!response) return null;
-
-      const contentType = response.headers()["content-type"] || "";
-      if (!contentType.includes("pdf") && !contentType.includes("octet-stream")) {
-        return null;
-      }
-
-      const buffer = await response.buffer();
-      return Buffer.from(buffer);
+      return await pdfPromise;
     } finally {
       await browser.close();
     }
